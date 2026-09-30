@@ -120,20 +120,51 @@ module.directive("tgOidcLoginButton", [
 # the same mechanism that renders the OIDC login button above), so decorating
 # core directives from here reaches the whole app, not just this plugin's
 # own template.
+#
+# IMPORTANT Angular gotcha (this is why the first version of this overlay
+# silently did nothing, even though it registered without error and even
+# though `$injector.get("tgUserChangePasswordDirective")[0].link` correctly
+# showed the new function):
+#
+# Neither tgUserSettingsNavigation nor tgUserChangePassword define a
+# `compile` function in taiga-front's stock source - only `link`. The very
+# first time Angular resolves a `.directive(name, factory)` provider (i.e.
+# the first `$injector.get(name + "Directive")` call, which happens lazily,
+# either from our own decorator's `$delegate` resolution or from $compile
+# itself, whichever runs first), Angular's own internal directive factory
+# normalizes the returned definition object by doing roughly:
+#     if (!directive.compile && directive.link) {
+#         directive.compile = valueFn(directive.link)
+#     }
+# That synthesized `directive.compile` is a closure that always returns the
+# *original* link function it captured at that moment - it does not re-read
+# `directive.link` later. $compile prefers `directive.compile` over
+# `directive.link` whenever both are present. So simply reassigning
+# `directive.link` (as this overlay used to do) changes a property Angular's
+# compiler no longer looks at once `.compile` exists; the original link
+# function keeps running unmodified, with no error anywhere to signal it.
+#
+# The fix is to overwrite `directive.compile` too (not just `directive.link`)
+# so it returns our replacement link function instead of the stale one.
+
+decorateDirectiveLink = (directive, newLink) ->
+    directive.link = newLink
+    directive.compile = -> newLink
 
 HideChangePasswordNavDecorator = ($delegate, $tgConfig) ->
     directive = $delegate[0]
     originalLink = directive.link
-    directive.link = ($scope, $el, $attrs) ->
+    newLink = ($scope, $el, $attrs) ->
         originalLink($scope, $el, $attrs)
         if not $tgConfig.get("defaultLoginEnabled", true)
             $el.find("#usersettingsmenu-change-password").remove()
+    decorateDirectiveLink(directive, newLink)
     return $delegate
 
 HideChangePasswordFormDecorator = ($delegate, $tgConfig) ->
     directive = $delegate[0]
     originalLink = directive.link
-    directive.link = ($scope, $el, $attrs, $ctrl) ->
+    newLink = ($scope, $el, $attrs, $ctrl) ->
         if not $tgConfig.get("defaultLoginEnabled", true)
             $el.find("section.main.user-change-password").html(
                 "<header><h1>Change Password</h1></header>" +
@@ -143,6 +174,7 @@ HideChangePasswordFormDecorator = ($delegate, $tgConfig) ->
             )
             return
         originalLink($scope, $el, $attrs, $ctrl)
+    decorateDirectiveLink(directive, newLink)
     return $delegate
 
 HideChangePasswordConfig = ($provide) ->
